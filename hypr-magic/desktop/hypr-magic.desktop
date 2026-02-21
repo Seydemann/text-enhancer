@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Hypr Magic
+Comment=Polish writing with Gemini
+Exec=/home/seydemann/product-for-me/hypr-magic/scripts/launch-hypr-magic.sh
+Icon=hypr-magic
+Terminal=false
+Categories=Utility;Office;
+Keywords=writing;text;gemini;ai;
+StartupNotify=true

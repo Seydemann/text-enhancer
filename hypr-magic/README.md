@@ -27,6 +27,13 @@ export GEMINI_API_KEY="YOUR_KEY"
 cargo run
 ```
 
+Release build/run:
+
+```bash
+cargo build --release
+./target/release/hypr-magic
+```
+
 Optional model override:
 
 ```bash
@@ -56,3 +63,16 @@ Then reload Hyprland config.
 - Gemini request runs on a background worker thread (UI stays responsive).
 - API key is intentionally read from env vars, not stored in code/config.
 - Icon logo file: `assets/gemini-logo.svg` (Gemini mark).
+
+## Wofi Launcher
+
+Installed files:
+
+- `~/.local/share/applications/hypr-magic.desktop`
+- `~/.local/share/icons/hicolor/scalable/apps/hypr-magic.svg`
+- `~/.config/hypr-magic/env` (launcher API key env file)
+
+The desktop launcher executes:
+
+- `/home/seydemann/product-for-me/hypr-magic/scripts/launch-hypr-magic.sh`
+- launcher enforces single-instance via a lock file (`$XDG_RUNTIME_DIR/hypr-magic.lock`)
