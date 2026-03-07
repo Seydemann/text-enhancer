@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="/home/seydemann/product-for-me/hypr-magic"
+APP_DIR="/home/seydemann/text-enhancer/hypr-magic"
 BIN="$APP_DIR/target/release/hypr-magic"
 ENV_FILE="$HOME/.config/hypr-magic/env"
 LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/hypr-magic.lock"

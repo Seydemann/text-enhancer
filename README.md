@@ -2,7 +2,7 @@
 
 Two writing-enhancement tools powered by Gemini:
 
-- `hypr-magic/`: Linux desktop utility with a floating Gemini icon and a text panel (`Magic` replaces the full text with polished output).
+- `hypr-magic/`: Linux desktop utility with a floating Gemini icon, local voice dictation, and a text panel (`Magic` replaces the full text with polished output).
 - Emacs utility (`scratch-magic-polish.el`): source of truth lives in your dotfiles repo.
 
 ## Emacs Utility
@@ -31,6 +31,9 @@ Quick run:
 
 ```bash
 cd hypr-magic
-export GEMINI_API_KEY="YOUR_KEY"
+export WHISPER_MODEL_PATH="/path/to/ggml-base.en.bin"
+export GEMINI_API_KEY="YOUR_KEY" # optional, only needed for Magic
+export GEMINI_MODEL="gemini-3.1-flash-lite-preview" # default
+export GEMINI_THINKING_LEVEL="minimal" # default
 cargo run
 ```
