@@ -440,6 +440,7 @@ fn build_ui(app: &Application, config: AppConfig) {
         .vexpand(true)
         .build();
     scroller.add_css_class("editor-surface");
+    scroller.set_overflow(gtk::Overflow::Hidden);
 
     let text_view = TextView::new();
     text_view.set_wrap_mode(gtk::WrapMode::WordChar);
