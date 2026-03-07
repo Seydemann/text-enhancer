@@ -225,7 +225,9 @@ fn install_css() {
       transition: border-color 180ms ease, background-color 180ms ease;
     }
 
-    .editor-surface textview {
+    .editor-surface textview,
+    .editor-surface textview text {
+      background: transparent;
       font-size: 15px;
     }
 
@@ -440,7 +442,6 @@ fn build_ui(app: &Application, config: AppConfig) {
         .vexpand(true)
         .build();
     scroller.add_css_class("editor-surface");
-    scroller.set_overflow(gtk::Overflow::Hidden);
 
     let text_view = TextView::new();
     text_view.set_wrap_mode(gtk::WrapMode::WordChar);
