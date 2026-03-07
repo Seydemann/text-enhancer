@@ -1,39 +1,32 @@
 # text-enhancer
 
-Two writing-enhancement tools powered by Gemini:
+Writing-enhancement tools powered by Gemini.
 
-- `hypr-magic/`: Linux desktop utility with a floating Gemini icon, local voice dictation, and a text panel (`Magic` replaces the full text with polished output).
-- Emacs utility (`scratch-magic-polish.el`): source of truth lives in your dotfiles repo.
+## Hypr Magic — Linux desktop utility
 
-## Emacs Utility
+A Rust + GTK4 floating scratchpad with streamed Gemini polish and local
+voice dictation. Built for Hyprland but works on any GTK4-capable
+compositor.
 
-Canonical file:
+See [`hypr-magic/README.md`](hypr-magic/README.md) for full setup and
+usage.
 
-- <https://github.com/Seydemann/dotfiles/blob/CachyOS/emacs/lisp/scratch-magic-polish.el>
-
-What it does:
-
-- runs only in `*scratch*`
-- sends full buffer content as `<raw>...</raw>`
-- stateless Gemini request each invocation
-- replaces full `*scratch*` content on success
-
-Set your API key (either):
-
-- env var: `GEMINI_API_KEY`
-- Emacs variable: `(setq scratch-magic-api-key "YOUR_KEY")`
-
-## Linux Desktop Utility
-
-See `hypr-magic/README.md` for run/setup details.
-
-Quick run:
+Quick start (Arch):
 
 ```bash
+sudo pacman -S rust gtk4 pipewire
 cd hypr-magic
-export WHISPER_MODEL_PATH="/path/to/ggml-base.en.bin"
-export GEMINI_API_KEY="YOUR_KEY" # optional, only needed for Magic
-export GEMINI_MODEL="gemini-3.1-flash-lite-preview" # default
-export GEMINI_THINKING_LEVEL="minimal" # default
+export GEMINI_API_KEY="your-key-here"
 cargo run
 ```
+
+## Emacs utility — scratch-magic-polish
+
+Canonical file lives in the
+[dotfiles repo](https://github.com/Seydemann/dotfiles/blob/CachyOS/emacs/lisp/scratch-magic-polish.el).
+
+Sends the `*scratch*` buffer to Gemini for a stateless polish and replaces
+the buffer content on success.
+
+Set your API key via env var (`GEMINI_API_KEY`) or Emacs variable
+(`(setq scratch-magic-api-key "YOUR_KEY")`).
