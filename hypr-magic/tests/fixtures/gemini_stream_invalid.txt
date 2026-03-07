@@ -1,0 +1,4 @@
+event: message
+data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}
+
+data: {"candidates":

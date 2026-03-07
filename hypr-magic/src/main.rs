@@ -1510,3 +1510,502 @@ fn escape_xml(input: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Cursor;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_config(model: &str, thinking_level: &str) -> AppConfig {
+        AppConfig {
+            gemini_api_key: Some("test-key".to_string()),
+            gemini_model: model.to_string(),
+            gemini_thinking_level: thinking_level.to_string(),
+            http_client: Client::builder().build().expect("client"),
+            pw_record_cmd: DEFAULT_PW_RECORD_CMD.to_string(),
+            whisper_cmd: "whisper-cpp".to_string(),
+            whisper_model_path: None,
+            whisper_lang: "en".to_string(),
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn test_output(stdout: &[u8], stderr: &[u8]) -> Output {
+        Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: stdout.to_vec(),
+            stderr: stderr.to_vec(),
+        }
+    }
+
+    fn write_executable_script(name: &str, body: &str) -> PathBuf {
+        let path = env::temp_dir().join(format!(
+            "hypr-magic-{name}-{}-{}.sh",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, body).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&path, permissions).unwrap();
+        path
+    }
+
+    #[test]
+    fn extract_text_returns_concatenated_text_parts() {
+        let body = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"text": "Hello"},
+                        {"text": " world"}
+                    ]
+                }
+            }]
+        });
+
+        assert_eq!(extract_text(&body).unwrap(), "Hello world");
+    }
+
+    #[test]
+    fn extract_text_errors_when_candidates_missing() {
+        let body = json!({});
+        assert!(extract_text(&body).unwrap_err().contains("Missing candidates"));
+    }
+
+    #[test]
+    fn extract_text_errors_for_thinking_only_response() {
+        let body = json!({
+            "candidates": [{
+                "content": {
+                    "parts": [
+                        {"thoughtSignature": "abc123"},
+                        {"text": ""}
+                    ]
+                }
+            }]
+        });
+
+        assert!(extract_text(&body).unwrap_err().contains("empty text"));
+    }
+
+    #[test]
+    fn escape_xml_escapes_all_special_characters() {
+        let input = r#"<tag attr="fish & chips">it's ok</tag>"#;
+        let escaped = escape_xml(input);
+        assert_eq!(
+            escaped,
+            "&lt;tag attr=&quot;fish &amp; chips&quot;&gt;it&apos;s ok&lt;/tag&gt;"
+        );
+    }
+
+    #[test]
+    fn default_gemini_thinking_level_uses_minimal_for_flash_lite() {
+        assert_eq!(
+            default_gemini_thinking_level("gemini-3.1-flash-lite-preview"),
+            "minimal"
+        );
+    }
+
+    #[test]
+    fn default_gemini_thinking_level_uses_low_for_other_models() {
+        assert_eq!(
+            default_gemini_thinking_level("gemini-3-flash-preview"),
+            "low"
+        );
+    }
+
+    #[test]
+    fn gemini_generation_config_builds_thinking_config_for_gemini_three() {
+        let config = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        let generation = gemini_generation_config(&config).unwrap();
+        assert_eq!(
+            generation,
+            json!({"thinkingConfig": {"thinkingLevel": "minimal"}})
+        );
+    }
+
+    #[test]
+    fn gemini_generation_config_is_none_for_non_gemini_three_model() {
+        let config = test_config("gemini-2.5-flash", "minimal");
+        assert!(gemini_generation_config(&config).is_none());
+    }
+
+    #[test]
+    fn gemini_generation_config_is_none_for_empty_thinking_level() {
+        let config = test_config("gemini-3.1-flash-lite-preview", "");
+        assert!(gemini_generation_config(&config).is_none());
+    }
+
+    #[test]
+    fn build_gemini_request_uses_streaming_endpoint_and_xml_escaped_raw_text() {
+        let config = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        let (endpoint, payload) = build_gemini_request(&config, r#"<tag>fish & "chips"</tag>"#);
+
+        assert_eq!(
+            endpoint,
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse"
+        );
+        assert_eq!(
+            payload["contents"][0]["parts"][0]["text"].as_str(),
+            Some("<raw>&lt;tag&gt;fish &amp; &quot;chips&quot;&lt;/tag&gt;</raw>")
+        );
+        assert_eq!(
+            payload["generationConfig"],
+            json!({"thinkingConfig": {"thinkingLevel": "minimal"}})
+        );
+    }
+
+    #[test]
+    fn consume_sse_stream_emits_text_chunks_from_fixture() {
+        let fixture = include_str!("../tests/fixtures/gemini_stream_ok.txt");
+        let cancel_flag = AtomicBool::new(false);
+        let mut chunks = Vec::new();
+
+        consume_sse_stream(Cursor::new(fixture), &cancel_flag, |text| {
+            chunks.push(text);
+            true
+        })
+        .unwrap();
+
+        assert_eq!(chunks, vec!["Hello".to_string(), " world".to_string()]);
+    }
+
+    #[test]
+    fn consume_sse_stream_errors_when_fixture_contains_no_text() {
+        let fixture = include_str!("../tests/fixtures/gemini_stream_empty.txt");
+        let cancel_flag = AtomicBool::new(false);
+
+        let err = consume_sse_stream(Cursor::new(fixture), &cancel_flag, |_| true).unwrap_err();
+        assert!(err.contains("empty text"));
+    }
+
+    #[test]
+    fn consume_sse_stream_errors_on_invalid_json_chunk() {
+        let fixture = include_str!("../tests/fixtures/gemini_stream_invalid.txt");
+        let cancel_flag = AtomicBool::new(false);
+
+        let err = consume_sse_stream(Cursor::new(fixture), &cancel_flag, |_| true).unwrap_err();
+        assert!(err.contains("Invalid stream JSON"));
+    }
+
+    #[test]
+    fn consume_sse_stream_stops_cleanly_when_cancelled_mid_stream() {
+        let fixture = include_str!("../tests/fixtures/gemini_stream_ok.txt");
+        let cancel_flag = AtomicBool::new(false);
+        let mut chunks = Vec::new();
+
+        consume_sse_stream(Cursor::new(fixture), &cancel_flag, |text| {
+            chunks.push(text);
+            cancel_flag.store(true, Ordering::Relaxed);
+            true
+        })
+        .unwrap();
+
+        assert_eq!(chunks, vec!["Hello".to_string()]);
+    }
+
+    #[test]
+    fn consume_sse_stream_stops_when_receiver_is_gone() {
+        let fixture = include_str!("../tests/fixtures/gemini_stream_ok.txt");
+        let cancel_flag = AtomicBool::new(false);
+        let mut calls = 0;
+
+        consume_sse_stream(Cursor::new(fixture), &cancel_flag, |_| {
+            calls += 1;
+            false
+        })
+        .unwrap();
+
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn history_can_undo_and_redo_track_single_level_state() {
+        assert!(!history_can_undo(&None));
+        assert!(!history_can_redo(&None));
+
+        let polished = Some(PolishHistory::new("raw".to_string(), "polished".to_string()));
+        assert!(history_can_undo(&polished));
+        assert!(!history_can_redo(&polished));
+
+        let mut original_history = PolishHistory::new("raw".to_string(), "polished".to_string());
+        original_history.undo();
+        let original = Some(original_history);
+        assert!(!history_can_undo(&original));
+        assert!(history_can_redo(&original));
+    }
+
+    #[test]
+    fn polish_history_transitions_between_polished_and_original() {
+        let mut history = Some(PolishHistory::new("raw".to_string(), "polished".to_string()));
+
+        assert_eq!(undo_polish_history(&mut history).as_deref(), Some("raw"));
+        assert!(!history_can_undo(&history));
+        assert!(history_can_redo(&history));
+
+        assert_eq!(redo_polish_history(&mut history).as_deref(), Some("polished"));
+        assert!(history_can_undo(&history));
+        assert!(!history_can_redo(&history));
+    }
+
+    #[test]
+    fn polish_history_rejects_repeat_undo_and_redo() {
+        let mut history = Some(PolishHistory::new("raw".to_string(), "polished".to_string()));
+
+        assert_eq!(undo_polish_history(&mut history).as_deref(), Some("raw"));
+        assert_eq!(undo_polish_history(&mut history), None);
+
+        assert_eq!(redo_polish_history(&mut history).as_deref(), Some("polished"));
+        assert_eq!(redo_polish_history(&mut history), None);
+    }
+
+    #[test]
+    fn polish_history_can_be_cleared_after_user_edit() {
+        let mut history = Some(PolishHistory::new("raw".to_string(), "polished".to_string()));
+
+        assert!(clear_polish_history(&mut history));
+        assert!(history.is_none());
+        assert!(!clear_polish_history(&mut history));
+    }
+
+    #[test]
+    fn set_polish_result_overwrites_previous_history() {
+        let mut history = Some(PolishHistory::new("first".to_string(), "first+".to_string()));
+
+        set_polish_result(&mut history, "second".to_string(), "second+".to_string());
+
+        let current = history.as_ref().unwrap();
+        assert_eq!(current.original, "second");
+        assert_eq!(current.polished, "second+");
+        assert!(current.showing_polished);
+    }
+
+    #[test]
+    fn summarize_output_prefers_stderr_then_stdout_then_default() {
+        assert_eq!(summarize_output(&test_output(b"", b"stderr")), "stderr");
+        assert_eq!(summarize_output(&test_output(b"stdout", b"")), "stdout");
+        assert_eq!(summarize_output(&test_output(b"", b"")), "no output");
+    }
+
+    #[test]
+    fn next_recording_path_uses_temp_dir_and_wav_suffix() {
+        let path = next_recording_path();
+        assert!(path.starts_with(env::temp_dir()));
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("hypr-magic-"));
+        assert!(name.ends_with(".wav"));
+    }
+
+    #[test]
+    fn ensure_voice_config_rejects_missing_or_nonexistent_models() {
+        let missing = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        assert!(ensure_voice_config(&missing).unwrap_err().contains("set WHISPER_MODEL_PATH"));
+
+        let mut nonexistent = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        nonexistent.whisper_model_path = Some("/tmp/definitely-missing-whisper-model.bin".to_string());
+        assert!(ensure_voice_config(&nonexistent)
+            .unwrap_err()
+            .contains("does not exist"));
+    }
+
+    #[test]
+    fn ensure_voice_config_accepts_existing_model_path() {
+        let path = env::temp_dir().join(format!(
+            "hypr-magic-test-model-{}.bin",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"test").unwrap();
+
+        let mut config = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        config.whisper_model_path = Some(path.to_string_lossy().to_string());
+
+        let result = ensure_voice_config(&config);
+        let _ = fs::remove_file(&path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn start_recording_reports_missing_pw_record_command() {
+        let mut config = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        config.pw_record_cmd = "/tmp/definitely-missing-pw-record".to_string();
+
+        let err = start_recording(&config).unwrap_err();
+        assert!(err.contains("PW_RECORD_CMD"));
+    }
+
+    #[test]
+    fn finalize_recording_and_transcribe_uses_stubbed_processes_and_cleans_up() {
+        let recorder = write_executable_script(
+            "pw-record",
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+outfile="${@: -1}"
+printf 'RIFFfake' > "$outfile"
+trap 'exit 0' INT
+while true; do
+  sleep 1
+done
+"#,
+        );
+        let whisper = write_executable_script(
+            "whisper",
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+wav=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-f" ]; then
+    wav="$2"
+    shift 2
+    continue
+  fi
+  shift
+done
+[ -f "$wav" ] || exit 91
+printf 'transcribed text\n'
+"#,
+        );
+        let model = env::temp_dir().join(format!(
+            "hypr-magic-test-model-{}.bin",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&model, b"test-model").unwrap();
+
+        let mut config = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        config.pw_record_cmd = recorder.to_string_lossy().to_string();
+        config.whisper_cmd = whisper.to_string_lossy().to_string();
+        config.whisper_model_path = Some(model.to_string_lossy().to_string());
+
+        let state = start_recording(&config).unwrap();
+        let wav_path = state.wav_path.clone();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !wav_path.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(wav_path.exists());
+
+        let result = finalize_recording_and_transcribe(&config, state);
+
+        let _ = fs::remove_file(&recorder);
+        let _ = fs::remove_file(&whisper);
+        let _ = fs::remove_file(&model);
+
+        assert_eq!(result.unwrap(), "transcribed text");
+        assert!(!wav_path.exists());
+    }
+
+    #[test]
+    fn transcribe_audio_reports_subprocess_failure() {
+        let whisper = write_executable_script(
+            "whisper-fail",
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf 'bad transcript path' >&2
+exit 42
+"#,
+        );
+        let model = env::temp_dir().join(format!(
+            "hypr-magic-test-model-{}.bin",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let wav = env::temp_dir().join(format!(
+            "hypr-magic-test-audio-{}.wav",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&model, b"test-model").unwrap();
+        fs::write(&wav, b"RIFFfake").unwrap();
+
+        let mut config = test_config("gemini-3.1-flash-lite-preview", "minimal");
+        config.whisper_cmd = whisper.to_string_lossy().to_string();
+        config.whisper_model_path = Some(model.to_string_lossy().to_string());
+
+        let err = transcribe_audio(&config, &wav).unwrap_err();
+
+        let _ = fs::remove_file(&whisper);
+        let _ = fs::remove_file(&model);
+        let _ = fs::remove_file(&wav);
+
+        assert!(err.contains("exited with"));
+        assert!(err.contains("bad transcript path"));
+    }
+
+    #[test]
+    fn load_config_reads_env_and_defaults() {
+        let _guard = env_lock().lock().unwrap();
+
+        unsafe {
+            env::remove_var("GEMINI_API_KEY");
+            env::remove_var("GEMINI_MODEL");
+            env::remove_var("GEMINI_THINKING_LEVEL");
+            env::remove_var("PW_RECORD_CMD");
+            env::remove_var("WHISPER_CMD");
+            env::remove_var("WHISPER_MODEL_PATH");
+            env::remove_var("WHISPER_LANG");
+        }
+
+        let defaults = load_config().unwrap();
+        assert!(defaults.gemini_api_key.is_none());
+        assert_eq!(defaults.gemini_model, DEFAULT_GEMINI_MODEL);
+        assert_eq!(defaults.gemini_thinking_level, DEFAULT_GEMINI_THINKING_LEVEL);
+        assert_eq!(defaults.pw_record_cmd, DEFAULT_PW_RECORD_CMD);
+        assert_eq!(defaults.whisper_cmd, DEFAULT_WHISPER_CMD);
+        assert!(defaults.whisper_model_path.is_none());
+        assert_eq!(defaults.whisper_lang, DEFAULT_WHISPER_LANG);
+
+        unsafe {
+            env::set_var("GEMINI_API_KEY", "abc");
+            env::set_var("GEMINI_MODEL", "gemini-3-flash-preview");
+            env::set_var("GEMINI_THINKING_LEVEL", "low");
+            env::set_var("PW_RECORD_CMD", "/tmp/pw-record-test");
+            env::set_var("WHISPER_CMD", "/tmp/whisper-test");
+            env::set_var("WHISPER_MODEL_PATH", "/tmp/test-model.bin");
+            env::set_var("WHISPER_LANG", "fr");
+        }
+
+        let configured = load_config().unwrap();
+        assert_eq!(configured.gemini_api_key.as_deref(), Some("abc"));
+        assert_eq!(configured.gemini_model, "gemini-3-flash-preview");
+        assert_eq!(configured.gemini_thinking_level, "low");
+        assert_eq!(configured.pw_record_cmd, "/tmp/pw-record-test");
+        assert_eq!(configured.whisper_cmd, "/tmp/whisper-test");
+        assert_eq!(
+            configured.whisper_model_path.as_deref(),
+            Some("/tmp/test-model.bin")
+        );
+        assert_eq!(configured.whisper_lang, "fr");
+
+        unsafe {
+            env::remove_var("GEMINI_API_KEY");
+            env::remove_var("GEMINI_MODEL");
+            env::remove_var("GEMINI_THINKING_LEVEL");
+            env::remove_var("PW_RECORD_CMD");
+            env::remove_var("WHISPER_CMD");
+            env::remove_var("WHISPER_MODEL_PATH");
+            env::remove_var("WHISPER_LANG");
+        }
+    }
+}
